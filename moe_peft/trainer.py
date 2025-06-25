@@ -50,6 +50,7 @@ class TrainConfig(DispatcherConfig):
     # on-the-fly evaluation settings
     evaluate_steps: int = None
     evaluate_configs_: List[EvaluateConfig] = None
+    loss_type: str = None
 
     @staticmethod
     def from_config(config: Dict[str, any]):
@@ -71,6 +72,7 @@ class TrainConfig(DispatcherConfig):
             data_path=config.get("data", None),
             prompt_template=config.get("prompt", None),
             evaluate_steps=config.get("evaluate_steps", None),
+            loss_type=config["loss_type"],
             evaluate_configs_=EvaluateConfig.from_config(config),
         )
 
@@ -81,13 +83,21 @@ class TrainConfig(DispatcherConfig):
             if isinstance(data_point.inputs, Prompt):
                 if prompter is None:
                     prompter = Prompter(self.prompt_template)
-                data_point.inputs = prompter.generate_prompt(
-                    instruction=data_point.inputs.instruction,
-                    input=data_point.inputs.input,
-                    label=data_point.inputs.label,
-                )
 
-            data_point.tokens = tokenizer.encode(data_point.inputs, **tokenizer_kwargs)
+                if data_point.inputs.chosen == None:
+                    data_point.inputs = prompter.generate_prompt(
+                        instruction=data_point.inputs.instruction,
+                        input=data_point.inputs.input,
+                        label=data_point.inputs.label,
+                        chosen=data_point.inputs.chosen,
+                        rejected=data_point.inputs.rejected,
+                    )
+            data_point.tokens = tokenizer.encode(data_point.inputs.input, **tokenizer_kwargs)
+            if data_point.inputs.chosen:
+                data_point.chosen_tokens = tokenizer.encode(data_point.inputs.chosen, **tokenizer_kwargs)
+            if data_point.inputs.rejected:
+                data_point.rejected_tokens = tokenizer.encode(data_point.inputs.rejected, **tokenizer_kwargs)
+
             if idx % 10000 == 0:
                 logging.info(f"Encode text data: {idx}/{len(data)}")
 
@@ -205,9 +215,11 @@ class TrainConfig(DispatcherConfig):
     def step(self):
         self.training_steps_ += 1
         if self.training_steps_ % self.accumulation_step_ == 0:
+            logging.info(f"step释放前显存 218: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
             self.optimizer_.step()
             self.lr_scheduler_.step()
             self.optimizer_.zero_grad()
+            logging.info(f"step释放后显存 218: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
 
     def finish(self):
         self.optimizer_.step()
@@ -241,7 +253,7 @@ def _compute_loss(config_dict: Dict[str, TrainConfig], outputs: List[LLMModelOut
         logging.info(f"    adapter: {adapter_name} loss: {loss}")
         if output.aux_loss:
             aux_loss = output.aux_loss / config_dict[adapter_name].accumulation_step_
-            logging.info(f"    adapter: {adapter_name}  aux: {aux_loss}")
+            logging.info(f"    adapter: {adapter_name} {config_dict[adapter_name].loss_type} aux: {aux_loss}")
             loss += aux_loss
         if total_loss is None:
             total_loss = loss
@@ -309,11 +321,14 @@ def train(
     evaluate_results = []
 
     while not dispatcher.check_task_done():
-        input_args = dispatcher.get_train_data()
+        if config.loss_type == 'dpo':
+            input_args = dispatcher.get_train_data()
+            outputs = model.dpo_forward(input_args)
+        else:
+            input_args = dispatcher.get_train_data()
+            outputs = model.forward(input_args)
 
-        outputs = model.forward(input_args)
-
-        total_loss = _compute_loss(config_dict, outputs)
+        total_loss = _compute_loss(config_dict, outputs) # 注意检查loss方向
 
         total_loss.backward()
 
@@ -334,6 +349,13 @@ def train(
             ):
                 evaluate_configs.extend(config.evaluate_configs_)
 
+        # logging.info(f"释放前显存: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
+        for output in outputs:
+            for k, v in list(vars(output).items()):
+                if torch.is_tensor(v):
+                    output.__dict__[k] = None  # 或 v.detach().cpu() if 还想保留值
+
+        del outputs, total_loss, input_args
         evaluate_results.extend(
             _perform_evaluate(
                 train_configs=config_dict,
@@ -344,15 +366,16 @@ def train(
                 max_seq_len=cutoff_len,
             )
         )
-
-    evaluate_configs = []
-
+        # logging.info(f"释放后显存2: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
+        # torch.cuda.empty_cache()  # 可选
+        # logging.info(f"释放后显存3: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
+        # logging.info("365 gc end")
     for config in configs:
         config.finish()
         if save_dir:
             save_adapter_weight(model, config, save_dir)
         evaluate_configs.extend(config.evaluate_configs_)
-
+    # logging.info("371 evaluate begin")
     evaluate_results.extend(
         _perform_evaluate(
             train_configs=config_dict,
@@ -363,7 +386,7 @@ def train(
             max_seq_len=cutoff_len,
         )
     )
-
+    # logging.info("371 evaluate end")
     if len(evaluate_results) > 0:
         if save_dir is not None:
             save_file = f"{save_dir}{os.sep}moe_peft_train_{int(time.time())}.json"

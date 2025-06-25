@@ -3,9 +3,10 @@ import json
 import logging
 import math
 import os
-from typing import Dict, List, Optional, Tuple
-
+from typing import Dict, List, Optional, Tuple, Union
 import torch
+import torch.nn.functional as F
+
 from huggingface_hub import snapshot_download
 from transformers import AutoModelForCausalLM
 
@@ -63,12 +64,30 @@ class CasualOutputLayer(LLMOutput):
             )
         else:
             labels = torch.tensor(labels, dtype=torch.long, device=output_logits.device)
+
         loss_fn = torch.nn.CrossEntropyLoss()
         return loss_fn(
             output_logits[..., :-1, :].contiguous().view(-1, self.vocab_size_),
             labels[..., 1:].contiguous().view(-1),
         )
 
+    def dpo_loss(
+        self, input_ids: torch.Tensor, output_logits: torch.Tensor, labels
+    ) -> torch.Tensor:
+        if isinstance(labels, torch.Tensor):
+            labels = (
+                labels.clone()
+                .detach()
+                .to(dtype=torch.long, device=output_logits.device)
+            )
+        else:
+            labels = torch.tensor(labels, dtype=torch.long, device=output_logits.device)
+
+        loss_fn = torch.nn.CrossEntropyLoss()
+        return loss_fn(
+            output_logits[..., :-1, :].contiguous().view(-1, self.vocab_size_),
+            labels[..., 1:].contiguous().view(-1),
+        )
 
 class ClassificationOutputLayer(LLMOutput):
     def __init__(
@@ -148,7 +167,6 @@ class OutputLayer(torch.nn.Module):
             adapter_name = lora_config.adapter_name_
             start_idx = lora_config.batch_start_idx_
             end_idx = lora_config.batch_end_idx_
-
             assert adapter_name != "" and adapter_name in self.layers_
             layer = self.layers_[adapter_name]
             outputs.append(
@@ -332,7 +350,7 @@ def get_lora_layer_weight(
 
 
 class LLMModel(torch.nn.Module):
-    def __init__(self, model: LLMForCausalLM):
+    def __init__(self, model: LLMForCausalLM, reference_model: LLMForCausalLM = None):
         super().__init__()
         args: LLMModelConfig = model.config_
         if args.vocab_size_ >= torch.finfo(args.dtype_).max:
@@ -340,6 +358,7 @@ class LLMModel(torch.nn.Module):
                 f"vocab_size >= max({args.dtype_}), consider load model with higher precision."
             )
         self.model_ = model
+        self.reference_ = reference_model
         self.config_ = args
         # configs
         self.name_or_path_ = args.name_or_path_
@@ -362,20 +381,78 @@ class LLMModel(torch.nn.Module):
             not input_args.inference_mode_ or input_args.gradient_checkpoint_ == "none"
         ), "Can not use gradient checkpoint when inference."
 
-        # prepare inputs
-        if isinstance(input_args.batch_tokens_, torch.Tensor):
-            input_ids = input_args.batch_tokens_.to(
-                dtype=torch.int64, device=self.device_
-            )
+        if input_args.batch_chosen_tokens_ != None and input_args.batch_rejected_tokens_ != None:
+            '''Concatenate the chosen and rejected inputs into a single tensor.'''
+            
+            # input_args.batch_chosen_tokens_ dimension: (8, 2048)
+            # max_length = max(len(input_args.batch_chosen_tokens_[0]), len(input_args.batch_rejected_tokens_[0]))
+            lengths_chosen = [len(seq) for seq in input_args.batch_chosen_tokens_]
+            lengths_rejected = [len(seq) for seq in input_args.batch_rejected_tokens_]
+            all_lengths = lengths_chosen + lengths_rejected
+            max_length = max(all_lengths) if all_lengths else 0
+
+            concatenated_batch = {}
+            for k, _ in vars(input_args).items():
+                if 'chosen' in k:
+                    pad_value = -100 if 'labels' in k else 0
+                    concatenated_key = k.replace('chosen', 'concatenated')
+                    tensor_list = []
+                    original_list_batch = getattr(input_args, k)
+                    for i, seq_list in enumerate(original_list_batch):
+                        seq_tensor = torch.tensor(seq_list, device=self.device_)
+                        if seq_tensor.size(-1) >= max_length:
+                            pass
+                        else:
+                            pad_size = list(seq_tensor.shape)
+                            pad_size[-1] = max_length - seq_tensor.size(-1)
+                            seq_tensor = torch.cat([seq_tensor, pad_value * torch.ones(*pad_size, dtype=seq_tensor.dtype, device=seq_tensor.device)], dim=-1)
+                        
+                        tensor_list.append(seq_tensor.unsqueeze(0))
+                    concatenated_batch[concatenated_key] = torch.cat(tensor_list, dim=0)
+
+            # logging.info(f"410 {len(concatenated_batch['batch_concatenated_tokens_'])}") # 8
+            for k, _ in vars(input_args).items():
+                if 'rejected' in k:
+                    pad_value = -100 if 'labels' in k else 0
+                    concatenated_key = k.replace('rejected', 'concatenated')
+
+                    original_list_batch = getattr(input_args, k)
+                    for i, seq_list in enumerate(original_list_batch):
+                        seq_tensor = torch.tensor(seq_list, device=self.device_)
+                        if seq_tensor.size(-1) >= max_length:
+                            pass
+                        else:
+                            pad_size = list(seq_tensor.shape)
+                            pad_size[-1] = max_length - seq_tensor.size(-1)
+                            seq_tensor = torch.cat([seq_tensor, pad_value * torch.ones(*pad_size, dtype=seq_tensor.dtype, device=seq_tensor.device)], dim=-1)
+
+                        concatenated_batch[concatenated_key] = torch.cat((
+                            concatenated_batch[concatenated_key],
+                            seq_tensor.unsqueeze(0),
+                        ), dim=0)
+
+            labels = concatenated_batch['batch_concatenated_tokens_labels_']
+            input_ids = concatenated_batch['batch_concatenated_tokens_']
+            # logging.info(f"432 {input_ids.shape}") # 16 664
+            inputs_embeds = self.model_.embed_tokens(input_ids)
+            if input_args.gradient_checkpoint_ != "none":
+                inputs_embeds.requires_grad_(True)
+
         else:
-            input_ids = torch.tensor(
-                input_args.batch_tokens_, dtype=torch.int64, device=self.device_
-            )
+             # prepare inputs
+            if isinstance(input_args.batch_tokens_, torch.Tensor):
+                input_ids = input_args.batch_tokens_.to(
+                    dtype=torch.int64, device=self.device_
+                )
+            else:
+                input_ids = torch.tensor(
+                    input_args.batch_tokens_, dtype=torch.int64, device=self.device_
+                )
+            inputs_embeds = self.model_.embed_tokens(input_ids)
+            if input_args.gradient_checkpoint_ != "none":
+                inputs_embeds.requires_grad_(True)
 
-        inputs_embeds = self.model_.embed_tokens(input_ids)
-        if input_args.gradient_checkpoint_ != "none":
-            inputs_embeds.requires_grad_(True)
-
+            labels = input_args.batch_labels_
         # prepare cache
         past_seen_tokens = (
             past_key_values.get_seq_length() if past_key_values is not None else 0
@@ -389,7 +466,6 @@ class LLMModel(torch.nn.Module):
             past_seen_tokens + inputs_embeds.shape[1],
             device=inputs_embeds.device,
         )
-
         # prepare mask
         if input_args.batch_masks_ is not None:
             # 2d mask is passed through the layers
@@ -404,6 +480,9 @@ class LLMModel(torch.nn.Module):
         else:
             attention_mask = None
 
+        if input_args.batch_chosen_masks_ is not None and input_args.batch_rejected_masks_ is not None:
+            attention_mask = concatenated_batch['batch_concatenated_masks_']
+
         if self.config_.attn_implementation_ != "flash_attn":
             causal_mask = self.model_.causal_mask(
                 attention_mask, inputs_embeds, cache_position, past_key_values
@@ -411,7 +490,7 @@ class LLMModel(torch.nn.Module):
         else:
             causal_mask = attention_mask
 
-        return input_ids, inputs_embeds, attention_mask, causal_mask, cache_position
+        return input_ids, inputs_embeds, attention_mask, causal_mask, cache_position, labels
 
     def _call_decoder_stack(
         self,
@@ -478,16 +557,15 @@ class LLMModel(torch.nn.Module):
             cache_position,
             past_key_values,
         )
-
-        # calculate loss
+        
         output = self.output_(hidden_states, input_args)
         assert isinstance(output, List)
         for idx, lora_config in enumerate(input_args.batch_configs_):
             output_data = output[idx]
             assert isinstance(output_data, LLMModelOutput)
-            start_idx = lora_config.batch_start_idx_
-            end_idx = lora_config.batch_end_idx_
-            output_data.batch_start_idx_ = start_idx
+            start_idx = lora_config.batch_start_idx_ # 0
+            end_idx = lora_config.batch_end_idx_ # length of input tokens 
+            output_data.batch_start_idx_ = start_idx  # start_idx, end_idx为了控制多任务
             output_data.batch_end_idx_ = end_idx
             if input_args.output_router_logits_ and len(all_router_logits[idx]) > 0:
                 output_data.router_logits = unpack_router_logits(all_router_logits[idx])
@@ -513,6 +591,144 @@ class LLMModel(torch.nn.Module):
 
         return output
 
+    # zq 25.06.17
+    def _get_batch_logps(self, logits: torch.FloatTensor, labels: torch.LongTensor, average_log_prob: bool = False) -> torch.FloatTensor:
+        """Compute the log probabilities of the given labels under the given logits.
+        Args:
+            logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
+            labels: Labels for which to compute the log probabilities. Label tokens with a value of -100 are ignored. Shape: (batch_size, sequence_length)
+            average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
+
+        Returns:
+            A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
+        """
+        assert logits.shape[:-1] == labels.shape
+        labels = labels[:, 1:].clone()
+        logits = logits[:, :-1, :]
+        loss_mask = (labels != -100)
+        # dummy token; we'll ignore the losses on these tokens later
+        labels[labels == -100] = 0
+        per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+        if average_log_prob:
+            return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        else:
+            return (per_token_logps * loss_mask).sum(-1)
+
+    # compute dpo loss
+    def dpo_forward(
+        self, input_args: LLMModelInput, past_key_values: Optional[LLMCache] = None
+    ) -> List[LLMModelOutput]:
+        # 这里input_ids, inputs_embeds已经是concat后的结果
+        # logging.info(f"627 dpo_forward _prepare_inputs begin")
+        input_ids, inputs_embeds, attention_mask, causal_mask, cache_position, labels = (
+            self._prepare_inputs(input_args, past_key_values)
+        )
+        # logging.info(f"627 dpo_forward _prepare_inputs done")
+        input_args.batch_labels_ = None
+        input_args.batch_tokens_ = None
+        input_args.batch_masks_ = None
+        
+        # embed positions
+        hidden_states = inputs_embeds
+
+        rotary_emb = self.model_.rotary_embed(
+            hidden_states, cache_position.unsqueeze(0)
+        )
+
+        hidden_states, all_router_logits = self._call_decoder_stack(
+            hidden_states,
+            input_args,
+            rotary_emb,
+            causal_mask,
+            cache_position,
+            past_key_values,
+        )
+        # logging.info(f"647 dpo_forward hidden states done")
+        # calculate loss
+        with torch.no_grad():
+            # reference_output
+            reference_logits = self.reference_(input_ids.to('cuda:1'), attention_mask.to('cuda:1')).logits.to(torch.float32)
+            ref_logps = self._get_batch_logps(reference_logits, labels.to('cuda:1'), average_log_prob=False)
+            # prepare inputs
+            if isinstance(input_args.batch_chosen_tokens_, torch.Tensor):
+                chosen = input_args.batch_chosen_tokens_.to(
+                    dtype=torch.int64, device=self.device_
+                )
+            else:
+                chosen = torch.tensor(
+                    input_args.batch_chosen_tokens_, dtype=torch.int64, device=self.device_
+                )
+            chosen_shape = chosen.shape[0]
+            # logging.info(f"663: {chosen.shape[0]}")
+            reference_chosen_logps = ref_logps[:chosen_shape].to('cuda:0')
+            reference_rejected_logps = ref_logps[chosen_shape:].to('cuda:0')
+            del chosen, ref_logps, reference_logits
+
+        hidden_states_chosen = hidden_states[:chosen_shape]
+        hidden_states_rejected = hidden_states[chosen_shape:]
+
+        output_chosen = self.output_(hidden_states_chosen, input_args)
+        output_rejected = self.output_(hidden_states_rejected, input_args)
+
+        # logging.info(f"671 dpo_forward reference_ done")
+        for idx, lora_config in enumerate(input_args.batch_configs_):
+            # chosen
+            output_data_chosen = output_chosen[idx]
+            assert isinstance(output_data_chosen, LLMModelOutput)
+            start_idx = lora_config.batch_start_idx_
+            end_idx = lora_config.batch_end_idx_
+            output_data_chosen.batch_start_idx_ = start_idx
+            output_data_chosen.batch_end_idx_ = end_idx
+            if input_args.output_router_logits_ and len(all_router_logits[idx]) > 0:
+                output_data_chosen.router_logits = unpack_router_logits(all_router_logits[idx])
+
+            policy_chosen_logps = self._get_batch_logps(output_data_chosen.logits, labels[:chosen_shape], average_log_prob=False)
+
+            # rejected
+            output_data_rejected = output_rejected[idx]
+            assert isinstance(output_data_rejected, LLMModelOutput)
+            start_idx = lora_config.batch_start_idx_
+            end_idx = lora_config.batch_end_idx_
+            output_data_rejected.batch_start_idx_ = start_idx
+            output_data_rejected.batch_end_idx_ = end_idx
+            if input_args.output_router_logits_ and len(all_router_logits[idx]) > 0:
+                output_data_rejected.router_logits = unpack_router_logits(all_router_logits[idx])
+
+            policy_rejected_logps = self._get_batch_logps(output_data_rejected.logits, labels[chosen_shape:], average_log_prob=False)
+
+            beta = 0.1
+            label_smoothing = 0
+            # dpo loss
+            pi_logratios = policy_chosen_logps - policy_rejected_logps
+            ref_logratios = reference_chosen_logps - reference_rejected_logps
+
+            logits = pi_logratios - ref_logratios  # also known as h_{\pi_\theta}^{y_w,y_l}
+            losses = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
+            output_data_chosen.loss = losses.mean()
+            output_data_chosen.loss_fn_=None
+
+            if output_data_chosen.router_logits is None:
+                continue
+            # compute router loss when router logits is available
+            loss_fn = router_loss_factory(
+                self.adapter_configs_[output_data_chosen.adapter_name]
+            )
+            if loss_fn is not None:
+                output_data_chosen.aux_loss = loss_fn(
+                    output_data_chosen.router_logits, attention_mask[start_idx:end_idx]
+                )
+            logging.info(f"output_data_chosen.aux_loss: {output_data_chosen.aux_loss}")
+        input_args.batch_chosen_tokens_ = None
+        input_args.batch_chosen_masks_ = None
+        input_args.batch_chosen_tokens_labels_ = None
+        input_args.batch_rejected_masks_ = None
+        input_args.batch_rejected_tokens_ = None
+        input_args.batch_rejected_tokens_labels_ = None
+        del hidden_states, rotary_emb, causal_mask, pi_logratios, ref_logratios, logits, losses, all_router_logits, input_args, output_rejected
+
+        return output_chosen
+
     def from_pretrained(
         name_or_path: str,
         device: str,
@@ -523,6 +739,7 @@ class LLMModel(torch.nn.Module):
         compute_dtype: torch.dtype = torch.bfloat16,
         double_quant: bool = True,
         quant_type: str = "nf4",
+        loss_type: str = None,
     ) -> "LLMModel":
         # load_dtype will change the precision of LLaMA pre-trained model
         # when loading with quantization (bits = 8 or bits = 4), load_dtype will only influence the actual computing precision
@@ -580,8 +797,26 @@ class LLMModel(torch.nn.Module):
         )
 
         logging.info(f"Use {attn_impl} as attention implementation.")
-
-        return LLMModel(model)
+        # logging.info(f"loss_type: {loss_type}")
+        # if loss_type == 'dpo':
+        #     reference_model = AutoModelForCausalLM.from_pretrained(
+        #         name_or_path,
+        #         device_map='cuda:1',
+        #         trust_remote_code=True,
+        #         torch_dtype=load_dtype,
+        #     )
+        #     reference_model.requires_grad_(False)
+        #     return LLMModel(model, reference_model)
+        # else:
+        #     return LLMModel(model)
+        reference_model = AutoModelForCausalLM.from_pretrained(
+                name_or_path,
+                device_map='cuda:1',
+                trust_remote_code=True,
+                torch_dtype=load_dtype,
+            )
+        reference_model.requires_grad_(False)
+        return LLMModel(model, reference_model)
 
     def init_adapter(
         self, config: AdapterConfig, weight: Optional[Dict[str, torch.Tensor]] = None

@@ -15,12 +15,17 @@ class Prompt:
     instruction: str = None
     input: str = None
     label: str = None
-
+    chosen: str = None
+    rejected: str = None
 
 @dataclass
 class InputData:
     inputs: List[Union[Prompt, List[str], str]] = None
     tokens: Optional[Tokens] = None
+    chosen_tokens: Optional[Tokens] = None
+    rejected_tokens: Optional[Tokens] = None
+    chosen_tokens_labels: Optional[Tokens] = None
+    rejected_tokens_labels: Optional[Tokens] = None
     labels: Optional[Labels] = None
 
 
@@ -71,7 +76,6 @@ def _efficient_operator_factory():
     efficient_operator = os.getenv("MOE_PEFT_EVALUATE_MODE") is None
     return efficient_operator
 
-
 @dataclass
 class LLMModelInput:
     batch_configs_: List[LLMBatchConfig] = None
@@ -79,6 +83,14 @@ class LLMModelInput:
     batch_labels_: List[Labels] = None
     batch_masks_: List[Masks] = None
 
+    batch_chosen_tokens_: List[Tokens] = None
+    batch_chosen_tokens_labels_: List[Labels] = None
+    batch_chosen_masks_: List[Masks] = None
+
+    batch_rejected_tokens_: List[Tokens] = None
+    batch_rejected_tokens_labels_: List[Labels] = None
+    batch_rejected_masks_: List[Masks] = None
+    
     output_router_logits_: bool = True
 
     gradient_checkpoint_: str = "none"

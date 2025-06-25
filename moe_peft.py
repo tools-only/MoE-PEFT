@@ -92,6 +92,7 @@ parser.add_argument(
     action="store_true",
     help="Use deterministic algorithms to improve the reproducibility",
 )
+# parser.add_argument("--loss_type", type=str)
 
 args = parser.parse_args()
 
@@ -126,6 +127,7 @@ def load_base_model() -> Tuple[moe_peft.Tokenizer, moe_peft.LLMModel]:
         attn_impl=args.attn_impl,
         use_sliding_window=args.sliding_window,
         bits=(8 if args.load_8bit else (4 if args.load_4bit else None)),
+        # max_seq_len=max_seq_len
         load_dtype=(
             torch.bfloat16
             if args.bf16
@@ -296,5 +298,6 @@ if __name__ == "__main__":
             strategy=config["train_strategy"],
             cutoff_len=config["cutoff_len"],
             save_step=config["save_step"],
+            # loss_type=config["loss_type"],
             save_dir=args.dir,
         )

@@ -88,10 +88,26 @@ class TrainTask:
             max_train_tokens_len = max(max_train_tokens_len, len(data.tokens))
             if len(data.tokens) > self.train_cutoff_len_:
                 data.tokens = data.tokens[: self.train_cutoff_len_]
+            logging.info(
+                f"Max train tokens length: {max_train_tokens_len}/{self.train_cutoff_len_}"
+            )
+            # zq updated by 25.06.19
+            # if combined sequence is too long, truncate the prompt
+            if data.chosen_tokens and data.rejected_tokens:
+                longer_response_length = max(len(data.chosen_tokens), len(data.rejected_tokens))
+                if len(data.tokens) + longer_response_length > self.train_cutoff_len_:
+                    # chosen_tokens = chosen_tokens[:]
+                    # rejected_tokens = rejected_tokens[:]
+                    data.tokens = data.tokens[: self.train_cutoff_len_ - longer_response_length]
+                # create labels
+                data.chosen_tokens = data.tokens + data.chosen_tokens
+                data.rejected_tokens = data.tokens + data.rejected_tokens
+                data.chosen_tokens_labels = data.chosen_tokens.copy()
+                # 这里检查一下有没有问题
+                data.chosen_tokens_labels[:len(data.tokens)] = [-100] * len(data.tokens)
+                data.rejected_tokens_labels = data.rejected_tokens.copy()
+                data.rejected_tokens_labels[:len(data.tokens)] = [-100] * len(data.tokens)
 
-        logging.info(
-            f"Max train tokens length: {max_train_tokens_len}/{self.train_cutoff_len_}"
-        )
         if self.group_by_length_:
             self.train_token_data_.sort(key=lambda x: len(x.tokens), reverse=True)
         else:
@@ -302,36 +318,84 @@ class Dispatcher:
         # to align batch token data
         for adapter in all_train_data:
             for data in all_train_data[adapter]:
-                batch_seq_len = max(batch_seq_len, len(data.tokens))
+                if data.chosen_tokens and data.rejected_tokens:
+                    tokens_len = max(len(data.chosen_tokens_labels), len(data.rejected_tokens_labels))
+                    batch_seq_len = max(batch_seq_len, tokens_len)
+                else:
+                    batch_seq_len = max(batch_seq_len, len(data.tokens))
 
         # all prompts and tokens / config
         batch_tokens: List[Tokens] = []
-        attention_masks: List[Masks] = []
         batch_labels: List[List] = []
-        lora_batch_data_config: List[LLMBatchConfig] = []
+        attention_masks: List[Masks] = []
 
+        if data.chosen_tokens:
+            batch_chosen_tokens: List[Tokens] = []
+            batch_chosen_tokens_labels: List[Tokens] = []
+            chosen_attention_masks: List[Masks] = []
+        else:
+            batch_chosen_tokens = None
+            batch_chosen_tokens_labels = None
+            chosen_attention_masks = None
+        if data.rejected_tokens:
+            batch_rejected_tokens: List[Tokens] = []
+            batch_rejected_tokens_labels: List[Tokens] = []
+            rejected_attention_masks: List[Masks] = []
+        else:
+            batch_rejected_tokens = None
+            batch_rejected_tokens_labels = None
+            rejected_attention_masks = None
+
+        lora_batch_data_config: List[LLMBatchConfig] = []
         # batch the all adapter data
         adapter_start_idx: int = 0
         for adapter in all_train_data:
             adapter_end_idx: int = adapter_start_idx + len(all_train_data[adapter])
             for data in all_train_data[adapter]:
-                tokens: Tokens = data.tokens.copy()
-                pad_side = self.tokenizer_.padding_side_
-                assert pad_side == "right" or pad_side == "left"
-                # pad the tokens to align
-                while len(tokens) < batch_seq_len:
-                    if pad_side == "right":
-                        tokens.append(self.tokenizer_.pad_id_)
-                    else:
-                        tokens.insert(0, self.tokenizer_.pad_id_)
-                batch_tokens.append(tokens)
-                attention_masks.append(self.tokenizer_.mask_from(tokens))
-                labels = data.labels
-                if labels is None:
-                    labels = tokens.copy()
+                if data.chosen_tokens:
+                    chosen_tokens: Tokens = data.chosen_tokens.copy()
+                    pad_side = self.tokenizer_.padding_side_
+                    assert pad_side == "right" or pad_side == "left"
+                    # pad the tokens to align
+                    while len(chosen_tokens) < batch_seq_len:
+                        if pad_side == "right":
+                            chosen_tokens.append(self.tokenizer_.pad_id_)
+                        else:
+                            chosen_tokens.insert(0, self.tokenizer_.pad_id_)
+                    batch_chosen_tokens.append(chosen_tokens)
+                    chosen_attention_masks.append(self.tokenizer_.mask_from(chosen_tokens))
+                    batch_chosen_tokens_labels.append(data.chosen_tokens_labels)
+                if data.rejected_tokens:
+                    rejected_tokens: Tokens = data.rejected_tokens.copy()
+                    pad_side = self.tokenizer_.padding_side_
+                    assert pad_side == "right" or pad_side == "left"
+                    # pad the tokens to align
+                    while len(rejected_tokens) < batch_seq_len:
+                        if pad_side == "right":
+                            rejected_tokens.append(self.tokenizer_.pad_id_)
+                        else:
+                            rejected_tokens.insert(0, self.tokenizer_.pad_id_)
+                    batch_rejected_tokens.append(rejected_tokens)
+                    rejected_attention_masks.append(self.tokenizer_.mask_from(rejected_tokens))
+                    batch_rejected_tokens_labels.append(data.rejected_tokens_labels)
                 else:
-                    labels = labels.copy()
-                batch_labels.append(labels)
+                    tokens: Tokens = data.tokens.copy()
+                    pad_side = self.tokenizer_.padding_side_
+                    assert pad_side == "right" or pad_side == "left"
+                    # pad the tokens to align
+                    while len(tokens) < batch_seq_len:
+                        if pad_side == "right":
+                            tokens.append(self.tokenizer_.pad_id_)
+                        else:
+                            tokens.insert(0, self.tokenizer_.pad_id_)
+                    batch_tokens.append(tokens)
+                    attention_masks.append(self.tokenizer_.mask_from(tokens))
+                    labels = data.labels
+                    if labels is None:
+                        labels = tokens.copy()
+                    else:
+                        labels = labels.copy()
+                    batch_labels.append(labels)
 
             lora_batch_data_config.append(
                 LLMBatchConfig(
@@ -349,5 +413,11 @@ class Dispatcher:
             batch_tokens_=batch_tokens,
             batch_labels_=batch_labels,
             batch_masks_=attention_masks,
+            batch_chosen_tokens_=batch_chosen_tokens,
+            batch_chosen_tokens_labels_=batch_chosen_tokens_labels,
+            batch_chosen_masks_=chosen_attention_masks,
+            batch_rejected_tokens_=batch_rejected_tokens,
+            batch_rejected_tokens_labels_=batch_rejected_tokens_labels,
+            batch_rejected_masks_=rejected_attention_masks,
             gradient_checkpoint_="recompute",
         )

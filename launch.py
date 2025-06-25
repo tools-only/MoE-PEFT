@@ -100,6 +100,7 @@ def gen_config(
     use_dora: bool = None,
     use_rslora: bool = None,
     group_by_length: bool = None,
+    loss_type: str = None,
 ):
     import moe_peft
 
@@ -121,7 +122,6 @@ def gen_config(
 
     index = len(template_obj["lora"])
     if multi_task:
-        task_list = [tasks]
         path_list = [data_path]
     else:
         task_list = tasks.split(";")
@@ -167,6 +167,7 @@ def gen_config(
             update_record(lora_config, "use_dora", use_dora)
             update_record(lora_config, "use_rslora", use_rslora)
             update_record(lora_config, "group_by_length", group_by_length)
+            update_record(lora_config, "loss_type", loss_type)
             template_obj["lora"].append(lora_config)
             index += 1
 

@@ -87,13 +87,15 @@ class CasualTask(BasicTask):
             ret.append(
                 InputData(
                     inputs=Prompt(
-                        instruction=data_point["instruction"],
-                        input=data_point.get("input", None),
+                        instruction=data_point["prompt"],
+                        # input=data_point.get("inputs", None),
+                        input=data_point.get("prompt", None),
                         label=data_point.get("output", None),
+                        chosen=data_point.get("chosen", None),
+                        rejected=data_point.get("rejected", None),
                     )
                 )
             )
-
         return ret
 
 

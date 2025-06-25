@@ -20,9 +20,8 @@ prompt_templates = {
         + "Write a response that appropriately completes the request.\n\n"
         + "### Instruction:\n{instruction}\n\n### Response:\n",
         "response_split": "### Response:",
-    },
+    }
 }
-
 
 # manage templates and prompt building.
 class Prompter:
