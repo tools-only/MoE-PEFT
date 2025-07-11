@@ -22,10 +22,10 @@
             "lora_dropout": 0.05,
             "strategies": "middle",
             "target_modules": {
-                "q_proj": false,
-                "k_proj": false,
-                "v_proj": false,
-                "o_proj": false,
+                "q_proj": true,
+                "k_proj": true,
+                "v_proj": true,
+                "o_proj": true,
                 "gate_proj": true,
                 "down_proj": true,
                 "up_proj": true
