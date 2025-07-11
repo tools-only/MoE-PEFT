@@ -982,14 +982,14 @@ class LLMModel(torch.nn.Module):
 
         logging.info(f"Use {attn_impl} as attention implementation.")
 
-        reference_model = AutoModelForCausalLM.from_pretrained(
-                name_or_path,
-                device_map='cuda:1',
-                trust_remote_code=True,
-                torch_dtype=load_dtype,
-            )
-        reference_model.requires_grad_(False)
-        # reference_model = None
+        # reference_model = AutoModelForCausalLM.from_pretrained(
+        #         name_or_path,
+        #         device_map='cuda:1',
+        #         trust_remote_code=True,
+        #         torch_dtype=load_dtype,
+        #     )
+        # reference_model.requires_grad_(False)
+        reference_model = None
         return LLMModel(model, reference_model)
 
     def init_adapter(
@@ -1019,17 +1019,17 @@ class LLMModel(torch.nn.Module):
         self.output_.layers_[config.adapter_name] = output_layer
         if type(config) is not AdapterConfig:
             # init transformer layers with LoRA
-            if config.strategies is None:
+            if config.strategies_ is None:
                 # full FT
                 self.training_layer = [i for i in range(32)]
-            elif config.strategies == 'first':
+            elif config.strategies_ == 'first':
                 self.training_layer = [i for i in range(13)]
-            elif config.strategies == 'middle':
+            elif config.strategies_ == 'middle':
                 self.training_layer = [i for i in range(13, 23)]
-            elif config.strategies == 'last':
+            elif config.strategies_ == 'last':
                 self.training_layer = [i for i in range(23, 32)]
             else:
-                raise ValueError(f"Unknown training strategy: {config.strategies}")
+                raise ValueError(f"Unknown training strategy: {config.strategies_}")
 
             for index, transformer_layer in enumerate(self.model_.layers_):
                 if index in self.training_layer:

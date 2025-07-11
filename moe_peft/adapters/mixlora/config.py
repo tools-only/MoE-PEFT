@@ -21,6 +21,7 @@ class MixLoraConfig(LoraConfig):
     jitter_noise_: float = None
     router_loss_: bool = True
     num_experts_: int = None
+    strategies_: str = None
     act_fn_: Optional[Union[str, torch.nn.Module]] = None
     # mixtral config
     top_k_: int = None
@@ -47,6 +48,10 @@ class MixLoraConfig(LoraConfig):
         assert (
             isinstance(self.routing_strategy_, str)
             and self.routing_strategy_ in available_routing_strategies
+        )
+        assert (
+            isinstance(self.strategies_, str)
+            and self.strategies_ in ['first', 'middle', 'last']
         )
         assert isinstance(self.jitter_noise_, float) and self.jitter_noise_ >= 0
         assert isinstance(self.router_loss_, bool)
@@ -86,6 +91,7 @@ class MixLoraConfig(LoraConfig):
         lora_config.routing_strategy_ = config["routing_strategy"]
         lora_config.router_loss_ = config.get("router_loss", True)
         lora_config.num_experts_ = config["num_experts"]
+        lora_config.strategies_ = config["strategies"]
         # silu for mixtral or gelu_new for switch transformers
         # left blank to automatically use the original act_fn of FFN
         lora_config.act_fn_ = config.get("act_fn", None)
