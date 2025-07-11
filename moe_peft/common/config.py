@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, TypeAlias, Union
 
 import torch
+from peft.config import PromptLearningConfig
+from peft.utils import PeftType
 
 Tokens: TypeAlias = List[int]
 Labels: TypeAlias = List[int]
@@ -13,6 +15,8 @@ Masks: TypeAlias = List[bool]
 @dataclass
 class Prompt:
     instruction: str = None
+    prefix: str = None
+    preference: str = None
     input: str = None
     label: str = None
     chosen: str = None
@@ -21,12 +25,15 @@ class Prompt:
 @dataclass
 class InputData:
     inputs: List[Union[Prompt, List[str], str]] = None
+    prefix: Optional[Tokens] = None
+    preference: List[float] = None
     tokens: Optional[Tokens] = None
+    sft_tokens: Optional[Tokens] = None
     chosen_tokens: Optional[Tokens] = None
     rejected_tokens: Optional[Tokens] = None
     chosen_tokens_labels: Optional[Tokens] = None
     rejected_tokens_labels: Optional[Tokens] = None
-    labels: Optional[Labels] = None
+    labels: Optional[Tokens] = None
 
 
 @dataclass
@@ -50,6 +57,7 @@ class LLMModelConfig:
     attn_implementation_: str = "eager"
     # data type
     dtype_: torch.dtype = None
+    strategies_: int = None
 
 
 @dataclass
@@ -91,11 +99,15 @@ class LLMModelInput:
     batch_rejected_tokens_labels_: List[Labels] = None
     batch_rejected_masks_: List[Masks] = None
     
+    batch_prefix_: List[Tokens] = None
+    batch_preference_: List[float] = None
+
     output_router_logits_: bool = True
 
     gradient_checkpoint_: str = "none"
     efficient_operator_: bool = field(default_factory=_efficient_operator_factory)
     inference_mode_: bool = False
+    router_soft_mask_: bool = False
 
 
 @dataclass
@@ -212,3 +224,28 @@ class LoraConfig(AdapterConfig):
         config["target_modules"] = tgt_list
 
         return config
+
+
+# prefix tuning config
+@dataclass
+class PrefixTuningConfig(PromptLearningConfig):
+    """
+    This is the configuration class to store the configuration of a [`PrefixEncoder`].
+
+    Args:
+        encoder_hidden_size (`int`): The hidden size of the prompt encoder.
+        prefix_projection (`bool`): Whether to project the prefix embeddings.
+    """
+
+    encoder_hidden_size: int = field(
+        default=None,
+        metadata={"help": "The hidden size of the encoder"},
+    )
+    prefix_projection: bool = field(
+        default=False,
+        metadata={"help": "Whether to project the prefix tokens"},
+    )
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.peft_type = PeftType.PREFIX_TUNING

@@ -9,14 +9,21 @@ from .common import Masks, Tokens
 class Tokenizer:
     def __init__(self, model_path: str):
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=True
+            model_path, trust_remote_code=True, padding_side="left"
         )
+        # updated 2025.07.10
+        self.tokenizer.add_special_tokens({"pad_token":"<pad>"})
+        self.tokenizer.pad_token_id = 0  
+        self.tokenizer.truncation_side = "left"
+        self.tokenizer.padding_side = "left"
+
         self.vocab_size_ = self.tokenizer.vocab_size
         self.padding_side_ = self.tokenizer.padding_side
         self.bos_id_ = self.tokenizer.bos_token_id
         self.eos_id_ = self.tokenizer.eos_token_id
         self.pad_id_ = self.tokenizer.pad_token_id
         self.unk_id_ = self.tokenizer.unk_token_id
+        
         # maybe pad id is unk
         if self.pad_id_ is not None:
             return

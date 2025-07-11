@@ -88,9 +88,10 @@ class CasualTask(BasicTask):
                 InputData(
                     inputs=Prompt(
                         instruction=data_point["prompt"],
-                        # input=data_point.get("inputs", None),
+                        prefix=data_point.get("prefix_single", None),
+                        preference=data_point.get("preference_vector", None),
                         input=data_point.get("prompt", None),
-                        label=data_point.get("output", None),
+                        label=data_point.get("chosen", None),
                         chosen=data_point.get("chosen", None),
                         rejected=data_point.get("rejected", None),
                     )

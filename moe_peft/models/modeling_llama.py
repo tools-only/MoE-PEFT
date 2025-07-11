@@ -137,7 +137,7 @@ class LlamaAttention(LLMAttention):
         args: LlamaConfig,
     ):
         super().__init__()
-        # attention
+        # attention: LoRA linear, residual connect
         self.wq_: Linear = Linear(wq, args.device_)  # dim * dim
         self.wk_: Linear = Linear(wk, args.device_)  # dim * dim
         self.wv_: Linear = Linear(wv, args.device_)  # dim * dim
@@ -171,9 +171,9 @@ class LlamaAttention(LLMAttention):
     ):
         batch_size, max_seq_len, _ = hidden_states.shape
 
-        xq = self.wq_.forward(hidden_states, input_args)
-        xk = self.wk_.forward(hidden_states, input_args)
-        xv = self.wv_.forward(hidden_states, input_args)
+        xq = self.wq_.forward(hidden_states, input_args) # LoRA linear
+        xk = self.wk_.forward(hidden_states, input_args) # LoRA linear
+        xv = self.wv_.forward(hidden_states, input_args) # LoRA linear
 
         # conver shape to multi head
         xq = xq.view(batch_size, max_seq_len, self.n_heads_, self.head_dim_).transpose(
@@ -186,6 +186,7 @@ class LlamaAttention(LLMAttention):
             batch_size, max_seq_len, self.n_kv_heads_, self.head_dim_
         ).transpose(1, 2)
 
+        # RoPE
         # apply rotary embedding
         cos, sin = rotary_emb
         xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)
@@ -548,16 +549,20 @@ class LlamaForCausalLM(LLMForCausalLM):
             llm_args.pad_token_id_ = -1
 
         model = LlamaForCausalLM(llm_args)
+        # fronzen base model
         llm_model.requires_grad_(False)
+        # input embedding
         model.embed_tokens_ = LlamaEmbedding(
             llm_model.model.embed_tokens.weight, llm_args.pad_token_id_
         )
+        # RMSNorm
         model.norm_ = LlamaRMSNorm(llm_model.model.norm.weight, llm_args.rms_norm_eps_)
         copy_parameters(llm_model.lm_head, model.lm_head_)
 
+        # TODO: custom training layers
         for idx, layer in enumerate(llm_model.model.layers):
             decoder = LlamaDecoderLayer(idx)
-            decoder.self_attn_ = LLAMA_ATTENTION_CLASSES[llm_args.attn_implementation_](
+            decoder.self_attn_ = LLAMA_ATTENTION_CLASSES[llm_args.attn_implementation_]( # self_attn_: fronzen?
                 layer.self_attn.q_proj,
                 layer.self_attn.k_proj,
                 layer.self_attn.v_proj,

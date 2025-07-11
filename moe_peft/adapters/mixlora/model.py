@@ -7,7 +7,8 @@ from transformers.activations import ACT2FN
 from moe_peft.common import LLMFeedForward, LLMModelInput, LLMMoeBlock, slice_tensor
 
 from .config import MixLoraConfig
-
+from ...utils import preference_mapping
+import logging
 
 def _mixlora_compatible_forward(
     ffn_layer: LLMFeedForward,
@@ -166,6 +167,7 @@ class MixtralSparseMoe(LLMMoeBlock):
         hidden_states: torch.Tensor,
         ffn_layer: LLMFeedForward,
         input_args: LLMModelInput,
+        idx: int,
     ) -> Tuple:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
 
@@ -179,8 +181,21 @@ class MixtralSparseMoe(LLMMoeBlock):
         hidden_states = hidden_states.view(-1, hidden_dim).to(self.dtype_)
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = self.gate_(hidden_states)
+        # router soft mask
+        if input_args.router_soft_mask_:
+            preference = input_args.batch_preference_[idx]
+            preference_mask = preference_mapping(preference)
+            soft_penalty = 10.0  # 可调
+            masked_router_logits = router_logits - (1.0 - torch.tensor(preference_mask, dtype=torch.float32, device=router_logits.device)) * soft_penalty
+            routing_weights = F.softmax(masked_router_logits, dim=1, dtype=self.dtype_)
+        else:
+            routing_weights = F.softmax(router_logits, dim=1, dtype=self.dtype_)
+            # logging.info(f"193: {routing_weights}")
+            soft_penalty = 10.0  # 可调
+            preference_mask = [0, 0, 0, 1, 0, 0, 0, 0, 0]
+            masked_router_logits = router_logits - (1.0 - torch.tensor(preference_mask, dtype=torch.float32, device=router_logits.device)) * soft_penalty
+            routing_weights = masked_router_logits
 
-        routing_weights = F.softmax(router_logits, dim=1, dtype=self.dtype_)
         routing_weights, selected_experts = torch.topk(
             routing_weights, self.topk_, dim=-1
         )

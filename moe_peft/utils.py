@@ -5,6 +5,30 @@ from typing import Optional, Tuple, Union
 
 import torch
 from packaging import version
+from typing import List
+
+def preference_mapping(preference: List[float]):
+    '''
+    preference: 90 dimension
+    '''
+    CATEGORY_TO_INDICES = {
+        0: list(range(2, 14)) + [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34],  # 人格特质
+        1: list(range(35, 47)),  # 动机与社会需求
+        2: [15, 16, 17],  # 沟通与人际互动
+        3: [18, 42, 43, 44, 45, 46, 47, 48],  # 工作倾向
+        4: [11, 12, 13, 14],  # 风险安全
+        5: [7, 8, 9] + [58, 59, 60, 61, 62, 63, 64, 65, 66, 67],  # 日常生活
+        6: [21, 22] + [49, 50, 51, 52, 53, 54, 55, 56, 57],  # 学习知识
+        7: [20] + list(range(68, 89)),  # 美学创意
+        8: [0, 1],  # 人口统计
+    }
+
+    router_mask = []
+    for cat_id in range(9):
+        indices = CATEGORY_TO_INDICES[cat_id]
+        activated = any(preference[i] in [0, 1] for i in indices)
+        router_mask.append(int(activated))
+    return router_mask
 
 
 def copy_parameters(source: torch.nn.Module, dest: torch.nn.Module):

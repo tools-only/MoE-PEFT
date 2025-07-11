@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import copy
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
@@ -17,6 +18,9 @@ from .prompter import Prompter
 from .tasks import BasicTask, CasualTask, MultiTask, task_dict
 from .tokenizer import Tokenizer
 
+MAX_LENGTH = 8192
+MAX_NEW_LENGTH = 512
+IGNORE_INDEX = -100
 
 @dataclass
 class TrainConfig(DispatcherConfig):
@@ -84,19 +88,31 @@ class TrainConfig(DispatcherConfig):
                 if prompter is None:
                     prompter = Prompter(self.prompt_template)
 
-                if data_point.inputs.chosen == None:
-                    data_point.inputs = prompter.generate_prompt(
-                        instruction=data_point.inputs.instruction,
-                        input=data_point.inputs.input,
-                        label=data_point.inputs.label,
-                        chosen=data_point.inputs.chosen,
-                        rejected=data_point.inputs.rejected,
-                    )
-            data_point.tokens = tokenizer.encode(data_point.inputs.input, **tokenizer_kwargs)
+                assert data_point.inputs.chosen is not None, f"Expected Chosen Not None, But Got None"
+            
+            # data_point.tokens = tokenizer.encode(data_point.inputs.instruction, **tokenizer_kwargs)
+            # data_point.labels = tokenizer.encode(data_point.inputs.label, **tokenizer_kwargs)
+            data_point.tokens = tokenizer.tokenizer(data_point.inputs.instruction, padding=False, 
+                                           truncation=True, add_special_tokens=False, max_length =MAX_LENGTH-MAX_NEW_LENGTH-1)["input_ids"]
+            data_point.tokens = [tokenizer.bos_id_] + data_point.tokens
+            prompt_length = len(data_point.tokens)
             if data_point.inputs.chosen:
-                data_point.chosen_tokens = tokenizer.encode(data_point.inputs.chosen, **tokenizer_kwargs)
+                # data_point.chosen_tokens = tokenizer.encode(data_point.inputs.chosen, **tokenizer_kwargs)
+                data_point.chosen_tokens = tokenizer.tokenizer(data_point.inputs.chosen, padding=False, 
+                                           truncation=True, add_special_tokens=False, max_length =MAX_LENGTH-MAX_NEW_LENGTH-1)["input_ids"]
+                data_point.chosen_tokens = data_point.tokens + data_point.chosen_tokens + [tokenizer.eos_id_]
+
+                data_point.chosen_tokens_labels = copy.deepcopy(data_point.chosen_tokens)
+                data_point.chosen_tokens_labels[:prompt_length] = [IGNORE_INDEX] * prompt_length
+
             if data_point.inputs.rejected:
-                data_point.rejected_tokens = tokenizer.encode(data_point.inputs.rejected, **tokenizer_kwargs)
+                # data_point.rejected_tokens = tokenizer.encode(data_point.inputs.rejected, **tokenizer_kwargs)
+                data_point.rejected_tokens = tokenizer.tokenizer(data_point.inputs.rejected, padding=False, 
+                                           truncation=True, add_special_tokens=False, max_length =MAX_LENGTH-MAX_NEW_LENGTH-1)["input_ids"]
+                data_point.rejected_tokens = data_point.tokens + data_point.rejected_tokens + [tokenizer.eos_id_]
+
+                data_point.rejected_tokens_labels = copy.deepcopy(data_point.rejected_tokens)
+                data_point.rejected_tokens_labels[:prompt_length] = [IGNORE_INDEX] * prompt_length
 
             if idx % 10000 == 0:
                 logging.info(f"Encode text data: {idx}/{len(data)}")
@@ -215,11 +231,11 @@ class TrainConfig(DispatcherConfig):
     def step(self):
         self.training_steps_ += 1
         if self.training_steps_ % self.accumulation_step_ == 0:
-            logging.info(f"step释放前显存 218: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
+            # logging.info(f"step释放前显存 218: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
             self.optimizer_.step()
             self.lr_scheduler_.step()
             self.optimizer_.zero_grad()
-            logging.info(f"step释放后显存 218: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
+            # logging.info(f"step释放后显存 218: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
 
     def finish(self):
         self.optimizer_.step()
@@ -290,6 +306,7 @@ def train(
     strategy: str = "optim",
     cutoff_len: Optional[int] = None,
     save_step: Optional[int] = None,
+    router_soft_mask: bool = False,
     save_dir: Optional[str] = None,
 ) -> None:
     if cutoff_len is None:
@@ -321,14 +338,14 @@ def train(
     evaluate_results = []
 
     while not dispatcher.check_task_done():
+        input_args = dispatcher.get_train_data()
+        input_args.router_soft_mask_ = router_soft_mask
         if config.loss_type == 'dpo':
-            input_args = dispatcher.get_train_data()
             outputs = model.dpo_forward(input_args)
         else:
-            input_args = dispatcher.get_train_data()
-            outputs = model.forward(input_args)
+            outputs = model.sft_forward(input_args)
 
-        total_loss = _compute_loss(config_dict, outputs) # 注意检查loss方向
+        total_loss = _compute_loss(config_dict, outputs)
 
         total_loss.backward()
 
@@ -353,7 +370,7 @@ def train(
         for output in outputs:
             for k, v in list(vars(output).items()):
                 if torch.is_tensor(v):
-                    output.__dict__[k] = None  # 或 v.detach().cpu() if 还想保留值
+                    output.__dict__[k] = None
 
         del outputs, total_loss, input_args
         evaluate_results.extend(
@@ -367,15 +384,14 @@ def train(
             )
         )
         # logging.info(f"释放后显存2: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
-        # torch.cuda.empty_cache()  # 可选
         # logging.info(f"释放后显存3: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
-        # logging.info("365 gc end")
+
     for config in configs:
         config.finish()
         if save_dir:
             save_adapter_weight(model, config, save_dir)
         evaluate_configs.extend(config.evaluate_configs_)
-    # logging.info("371 evaluate begin")
+
     evaluate_results.extend(
         _perform_evaluate(
             train_configs=config_dict,
@@ -386,7 +402,7 @@ def train(
             max_seq_len=cutoff_len,
         )
     )
-    # logging.info("371 evaluate end")
+
     if len(evaluate_results) > 0:
         if save_dir is not None:
             save_file = f"{save_dir}{os.sep}moe_peft_train_{int(time.time())}.json"

@@ -338,7 +338,7 @@ class Linear(nn.Module):
                 base_layer, Linear4bit
             ), f"error type - {type(base_layer)}."
         else:
-            base_layer.requires_grad_(False)
+            base_layer.requires_grad_(False) # frozen base
 
         self.device_ = torch.device(device)
         self.base_layer_ = base_layer.to(self.device_)
@@ -490,7 +490,8 @@ class Linear(nn.Module):
                     residual[start_idx:end_idx],
                 )
                 continue
-
+            
+            # lora_linear forward
             lora_data = fwd_fn(
                 residual=residual[start_idx:end_idx],
                 hidden_states=hidden_states[start_idx:end_idx],

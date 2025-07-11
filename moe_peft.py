@@ -92,7 +92,7 @@ parser.add_argument(
     action="store_true",
     help="Use deterministic algorithms to improve the reproducibility",
 )
-# parser.add_argument("--loss_type", type=str)
+# parser.add_argument("--router_soft_mask", type=bool)
 
 args = parser.parse_args()
 
@@ -121,7 +121,7 @@ def query_yes_no(question, default="no"):
 
 def load_base_model() -> Tuple[moe_peft.Tokenizer, moe_peft.LLMModel]:
     logging.info("Initializing pre-trained model.")
-    model = moe_peft.LLMModel.from_pretrained(
+    model = moe_peft.LLMModel.from_pretrained( # --> from_pretrained in modeling_llama.py
         name_or_path=args.base_model,
         device=args.device,
         attn_impl=args.attn_impl,
@@ -245,7 +245,7 @@ if __name__ == "__main__":
     if args.attn_impl is None:
         if (
             inference_mode
-            and moe_peft_executor.device_name() == "cuda"
+            and moe_peft_executor.device_name() == "cuda:1"
             and is_flash_attn_2_available()
         ):
             args.attn_impl = "flash_attn"
@@ -298,6 +298,6 @@ if __name__ == "__main__":
             strategy=config["train_strategy"],
             cutoff_len=config["cutoff_len"],
             save_step=config["save_step"],
-            # loss_type=config["loss_type"],
+            router_soft_mask=config["router_soft_mask"],
             save_dir=args.dir,
         )

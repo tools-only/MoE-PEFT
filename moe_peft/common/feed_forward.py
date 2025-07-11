@@ -9,7 +9,7 @@ from .config import LLMModelInput
 from .lora_linear import Linear, get_range_tensor
 
 
-class FeedForward(torch.nn.Module):
+class FeedForward(torch.nn.Module): # moe结构具体experts位置
     def __init__(self, mlp: LLMFeedForward) -> None:
         super().__init__()
         self.mlp_: LLMFeedForward = mlp
@@ -48,6 +48,7 @@ class FeedForward(torch.nn.Module):
                     hidden_states=data[start_idx:end_idx],
                     ffn_layer=self.mlp_,
                     input_args=input_args,
+                    idx=idx,
                 )
 
                 if (
