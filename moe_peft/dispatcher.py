@@ -304,18 +304,18 @@ class Dispatcher:
         self.__dispatch_task_in()
 
         # get task train data
-        all_train_data: Dict[str, List[InputData]] = {}
+        all_adapters: Dict[str, List[InputData]] = {}
         if self.strategy_ == "none":
-            all_train_data = self.none_dispatch_strategy()
+            all_adapters = self.none_dispatch_strategy()
         elif self.strategy_ == "optim":
-            all_train_data = self.optim_dispatch_strategy()
+            all_adapters = self.optim_dispatch_strategy()
         else:
             raise "unkown strategy"
 
         batch_seq_len: int = -1
         # to align batch token data
-        for adapter in all_train_data:
-            for data in all_train_data[adapter]:
+        for adapter in all_adapters:
+            for data in all_adapters[adapter]:
                 if data.chosen_tokens and data.rejected_tokens:
                     tokens_len = max(len(data.chosen_tokens_labels), len(data.rejected_tokens_labels))
                     batch_seq_len = max(batch_seq_len, tokens_len)
@@ -348,10 +348,11 @@ class Dispatcher:
 
         lora_batch_data_config: List[LLMBatchConfig] = []
         # batch the all adapter data with padding
+
         adapter_start_idx: int = 0
-        for adapter in all_train_data:
-            adapter_end_idx: int = adapter_start_idx + len(all_train_data[adapter])
-            for data in all_train_data[adapter]:
+        for adapter in all_adapters:
+            adapter_end_idx: int = adapter_start_idx + len(all_adapters[adapter])
+            for data in all_adapters[adapter]:
                 tokens: Tokens = data.tokens.copy()
                 pad_side = self.tokenizer_.padding_side_
                 assert pad_side == "right" or pad_side == "left"
@@ -362,7 +363,7 @@ class Dispatcher:
                     else:
                         tokens.insert(0, self.tokenizer_.pad_id_)
                 batch_tokens.append(tokens)
-                attention_masks.append(self.tokenizer_.mask_from(tokens)) # attention mask怎么写？
+                attention_masks.append(self.tokenizer_.mask_from(tokens))
                 # labels = data.labels
                 # batch_labels.append(labels.copy())
 
@@ -387,19 +388,21 @@ class Dispatcher:
 
                 if data.rejected_tokens:
                     rejected_tokens: Tokens = data.rejected_tokens.copy()
+                    rejected_tokens_labels: Tokens = data.rejected_tokens_labels.copy()
                     pad_side = self.tokenizer_.padding_side_
                     assert pad_side == "right" or pad_side == "left"
                     # pad the tokens to align
                     while len(rejected_tokens) < batch_seq_len:
                         if pad_side == "right":
                             rejected_tokens.append(self.tokenizer_.pad_id_)
+                            rejected_tokens_labels.append(self.tokenizer_.pad_id_)
                         else:
                             rejected_tokens.insert(0, self.tokenizer_.pad_id_)
+                            rejected_tokens_labels.insert(0, self.tokenizer_.pad_id_)
                     batch_rejected_tokens.append(rejected_tokens)
-                    rejected_attention_masks.append(self.tokenizer_.mask_from(rejected_tokens))
-                    batch_rejected_tokens_labels.append(data.rejected_tokens_labels)
+                    batch_rejected_tokens_labels.append(rejected_tokens_labels)
+                    rejected_attention_masks.append(self.tokenizer_.mask_from(chosen_tokens))
 
-                # prefix
                 if data.inputs.prefix:
                     batch_prefix.append(data.inputs.prefix)
                 if data.inputs.preference:
@@ -412,6 +415,7 @@ class Dispatcher:
                     batch_end_idx_=adapter_end_idx,
                 )
             )
+            logging.info(f"{adapter} {adapter_start_idx} {adapter_end_idx}")
             adapter_start_idx = adapter_end_idx
 
         self.__dispatch_task_out()

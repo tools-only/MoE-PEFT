@@ -17,6 +17,7 @@ else:
     from moe_peft.utils import Linear8bitLt, Linear4bit
 
 from typing import Any, Dict, List, Tuple
+import logging
 
 
 def dequantize_bnb_weight(weight: torch.nn.Parameter, state=None):
@@ -415,9 +416,14 @@ class Linear(nn.Module):
         dropouts: List[float] = []
         scalings: List[float] = []
         loras: Tuple[torch.Tensor] = ()
+        # logging.info("418")
+        # logging.info(f"{input_args.batch_configs_}") # [LLMBatchConfig(adapter_name_='casual_8B_1800_first', batch_start_idx_=0, batch_end_idx_=2)]
         for lora_config in input_args.batch_configs_:
+            # logging.info(f"422") 
+            # logging.info(f"{lora_config}") # LLMBatchConfig(adapter_name_='casual_8B_1800_first', batch_start_idx_=0, batch_end_idx_=2)
+            # logging.info(f"{lora_config.adapter_name_}") # casual_8B_1800_first
             adapter_name = lora_config.adapter_name_
-
+            
             if adapter_name not in self.loras_:
                 loras += (None, None)
                 dropouts.append(None)

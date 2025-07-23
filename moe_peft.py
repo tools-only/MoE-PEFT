@@ -264,6 +264,7 @@ if __name__ == "__main__":
 
     tokenizer, model = load_base_model()
     adapters = init_adapter_config(config, model)
+    logging.info(adapters)
 
     moe_peft_executor.empty_cache()
 

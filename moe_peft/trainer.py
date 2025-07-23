@@ -366,7 +366,6 @@ def train(
             ):
                 evaluate_configs.extend(config.evaluate_configs_)
 
-        # logging.info(f"释放前显存: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
         for output in outputs:
             for k, v in list(vars(output).items()):
                 if torch.is_tensor(v):
@@ -383,8 +382,6 @@ def train(
                 max_seq_len=cutoff_len,
             )
         )
-        # logging.info(f"释放后显存2: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
-        # logging.info(f"释放后显存3: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
 
     for config in configs:
         config.finish()

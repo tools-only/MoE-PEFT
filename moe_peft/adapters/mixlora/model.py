@@ -7,7 +7,7 @@ from transformers.activations import ACT2FN
 from moe_peft.common import LLMFeedForward, LLMModelInput, LLMMoeBlock, slice_tensor
 
 from .config import MixLoraConfig
-from ...utils import preference_mapping
+from ...utils import preference_mapping, weighted_preference_mapping
 import logging
 
 def _mixlora_compatible_forward(
@@ -180,29 +180,37 @@ class MixtralSparseMoe(LLMMoeBlock):
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.view(-1, hidden_dim).to(self.dtype_)
         # router_logits: (batch * sequence_length, n_experts)
-        router_logits = self.gate_(hidden_states)
+        
         # router soft mask
         if input_args.router_soft_mask_:
+            router_logits = self.gate_(hidden_states)
+            zeros_like_router = torch.zeros_like(router_logits).to(hidden_states.device)
+
+            router_logits = None
+            # updated by zq 07.19
             preference = input_args.batch_preference_[idx]
-            preference_mask = preference_mapping(preference)
+            # preference_mask = preference_mapping(preference)
+            preference_mask = weighted_preference_mapping(preference)
             soft_penalty = 10.0  # 可调
-            masked_router_logits = router_logits - (1.0 - torch.tensor(preference_mask, dtype=torch.float32, device=router_logits.device)) * soft_penalty
+            masked_router_logits = zeros_like_router - (1.0 - torch.tensor(preference_mask, dtype=torch.float32, device=hidden_states.device)) * soft_penalty
+
             routing_weights = F.softmax(masked_router_logits, dim=1, dtype=self.dtype_)
+            routing_weights, selected_experts = torch.topk(
+                routing_weights, self.topk_, dim=-1
+            )
+
+            routing_weights, selected_experts = torch.topk(
+                routing_weights, self.topk_, dim=-1
+            )
+            self._profiling(batch_size, sequence_length, selected_experts)
+            routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         else:
-            routing_weights = F.softmax(router_logits, dim=1, dtype=self.dtype_)
-            # logging.info(f"193: {routing_weights}")
-            soft_penalty = 10.0  # 可调
-            preference_mask = [0, 0, 0, 1, 0, 0, 0, 0, 0]
-            masked_router_logits = router_logits - (1.0 - torch.tensor(preference_mask, dtype=torch.float32, device=router_logits.device)) * soft_penalty
-            routing_weights = masked_router_logits
-
-        routing_weights, selected_experts = torch.topk(
-            routing_weights, self.topk_, dim=-1
-        )
-
-        self._profiling(batch_size, sequence_length, selected_experts)
-
-        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+            router_logits = None
+            routing_weights = torch.tensor([[1], [0], [0], [0], [0], [0], [0], [0], [0]], dtype=torch.float32).to(hidden_states.device)
+            routing_weights, selected_experts = torch.topk(
+                routing_weights, self.topk_, dim=-1
+            )
+            self._profiling(batch_size, sequence_length, selected_experts)
 
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim),
@@ -234,7 +242,6 @@ class MixtralSparseMoe(LLMMoeBlock):
         # Unpack
         for expert_idx in range(self.experts_):
             idx, top_x = torch.where(expert_mask[expert_idx])
-
             # Index the correct hidden states and compute the expert hidden state for
             # the current expert. We need to make sure to multiply the output hidden
             # states by `routing_weights` on the corresponding tokens (top-1 and top-2)

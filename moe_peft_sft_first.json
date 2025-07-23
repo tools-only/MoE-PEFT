@@ -7,15 +7,15 @@
     "router_soft_mask": true,
     "lora": [
         {
-            "name": "casual_8B_1800_first",
+            "name": "casual_8B_88580_first_top9_weighted",
             "task_name": "casual",
             "optim": "adamw",
             "scheduler_type": "constant",
             "warmup_steps": 0,
             "lr": 1e-5,
-            "batch_size": 4,
-            "micro_batch_size": 4,
-            "evaluate_batch_size": 4,
+            "batch_size": 2,
+            "micro_batch_size": 2,
+            "evaluate_batch_size": 2,
             "num_epochs": 2,
             "r": 16,
             "lora_alpha": 32,
@@ -32,9 +32,9 @@
             },
             "routing_strategy": "mixlora",
             "num_experts": 9,
-            "top_k": 1,
+            "top_k": 9,
             "group_by_length": false,
-            "data": "group_records_1800.jsonl",
+            "data": "group_records_88580.jsonl",
             "prompt": "alpaca",
             "loss_type": "sft"
         }

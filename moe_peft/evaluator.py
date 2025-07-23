@@ -49,8 +49,6 @@ class EvaluateConfig:
         )
         config_list = []
         for task_name_, data_path_ in zip(task_list, path_list):
-            if task_name_ not in task_dict:
-                continue
             config_list.append(
                 EvaluateConfig(
                     adapter_name=adapter_name,
@@ -96,8 +94,23 @@ def _prepare_tasks(model, tokenizer, configs):
         config.prepare(tokenizer, model.device_)
         if not isinstance(model.adapter_configs_[config.adapter_name], MixLoraConfig):
             continue
-        for layer in model.model_.layers_:
-            if config.adapter_name in layer.mlp_.moes_:
+
+        if config.strategies_ is None:
+            # full FT
+            training_layer = [i for i in range(32)]
+        elif config.strategies_ == 'first':
+            training_layer = [i for i in range(13)]
+        elif config.strategies_ == 'middle':
+            training_layer = [i for i in range(13, 23)]
+        elif config.strategies_ == 'last':
+            training_layer = [i for i in range(23, 32)]
+        elif config.strategies_ == 'whole':
+            training_layer = [i for i in range(32)]
+        else:
+            raise ValueError(f"Unknown training strategy: {config.strategies_}")
+        
+        for index, layer in enumerate(model.model_.layers_):
+            if config.adapter_name in layer.mlp_.moes_ and index in training_layer:
                 layer.mlp_.moes_[config.adapter_name].router_profile_ = (
                     config.router_profile
                 )
@@ -173,9 +186,23 @@ def _compute_metrcis(model, current_configs, sequence_lengths, batch_labels, out
 
         if config.router_profile:
             adapter_config = model.adapter_configs_[config.adapter_name]
+            if config.strategies_ is None:
+                # full FT
+                training_layer = [i for i in range(32)]
+            elif config.strategies_ == 'first':
+                training_layer = [i for i in range(13)]
+            elif config.strategies_ == 'middle':
+                training_layer = [i for i in range(13, 23)]
+            elif config.strategies_ == 'last':
+                training_layer = [i for i in range(23, 32)]
+            elif config.strategies_ == 'whole':
+                training_layer = [i for i in range(32)]
+            else:
+                raise ValueError(f"Unknown training strategy: {config.strategies_}")
+            
             if isinstance(adapter_config, MixLoraConfig):
                 router_statistic_ = list(0 for _ in range(adapter_config.num_experts_))
-                for layer in model.model_.layers_:
+                for index, layer in enumerate(model.model_.layers_):
                     if config.adapter_name not in layer.mlp_.moes_:
                         continue
                     for idx, val in enumerate(
@@ -266,6 +293,9 @@ def evaluate(
     if max_concurrent_jobs is None:
         max_concurrent_jobs = len(configs)
         logging.info(
+            f"Setting max_concurrent_jobs to {max_concurrent_jobs} automatically"
+        )
+        print(
             f"Setting max_concurrent_jobs to {max_concurrent_jobs} automatically"
         )
 
