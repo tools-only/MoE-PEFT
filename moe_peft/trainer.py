@@ -266,7 +266,7 @@ def _compute_loss(config_dict: Dict[str, TrainConfig], outputs: List[LLMModelOut
     for output in outputs:
         adapter_name = output.adapter_name
         loss = output.loss / config_dict[adapter_name].accumulation_step_
-        logging.info(f"    adapter: {adapter_name} loss: {loss}")
+        logging.info(f"    adapter: {adapter_name} loss: {loss.item()}")
         if output.aux_loss:
             aux_loss = output.aux_loss / config_dict[adapter_name].accumulation_step_
             logging.info(f"    adapter: {adapter_name} {config_dict[adapter_name].loss_type} aux: {aux_loss}")
@@ -346,8 +346,9 @@ def train(
             outputs = model.sft_forward(input_args)
 
         total_loss = _compute_loss(config_dict, outputs)
-
         total_loss.backward()
+        loss_scalar = total_loss.item()  # 提取为 float
+        del total_loss
 
         evaluate_configs = []
 
@@ -369,19 +370,20 @@ def train(
         for output in outputs:
             for k, v in list(vars(output).items()):
                 if torch.is_tensor(v):
-                    output.__dict__[k] = None
+                    output.__dict__[k] = v.detach() if v.requires_grad else None
 
-        del outputs, total_loss, input_args
-        evaluate_results.extend(
-            _perform_evaluate(
-                train_configs=config_dict,
-                evaluate_configs=evaluate_configs,
-                model=model,
-                tokenizer=tokenizer,
-                max_concurrent_jobs=max_concurrent_jobs,
-                max_seq_len=cutoff_len,
-            )
-        )
+        del outputs, input_args
+        torch.cuda.empty_cache()
+        # evaluate_results.extend(
+        #     _perform_evaluate(
+        #         train_configs=config_dict,
+        #         evaluate_configs=evaluate_configs,
+        #         model=model,
+        #         tokenizer=tokenizer,
+        #         max_concurrent_jobs=max_concurrent_jobs,
+        #         max_seq_len=cutoff_len,
+        #     )
+        # )
 
     for config in configs:
         config.finish()
@@ -389,22 +391,22 @@ def train(
             save_adapter_weight(model, config, save_dir)
         evaluate_configs.extend(config.evaluate_configs_)
 
-    evaluate_results.extend(
-        _perform_evaluate(
-            train_configs=config_dict,
-            evaluate_configs=evaluate_configs,
-            model=model,
-            tokenizer=tokenizer,
-            max_concurrent_jobs=max_concurrent_jobs,
-            max_seq_len=cutoff_len,
-        )
-    )
+    # evaluate_results.extend(
+    #     _perform_evaluate(
+    #         train_configs=config_dict,
+    #         evaluate_configs=evaluate_configs,
+    #         model=model,
+    #         tokenizer=tokenizer,
+    #         max_concurrent_jobs=max_concurrent_jobs,
+    #         max_seq_len=cutoff_len,
+    #     )
+    # )
 
-    if len(evaluate_results) > 0:
-        if save_dir is not None:
-            save_file = f"{save_dir}{os.sep}moe_peft_train_{int(time.time())}.json"
-            with open(save_file, "w") as f:
-                json.dump(evaluate_results, f, indent=4)
-            logging.info(f"saving evaluation result to {save_file}")
-        else:
-            print(json.dumps(evaluate_results, indent=4))
+    # if len(evaluate_results) > 0:
+    #     if save_dir is not None:
+    #         save_file = f"{save_dir}{os.sep}moe_peft_train_{int(time.time())}.json"
+    #         with open(save_file, "w") as f:
+    #             json.dump(evaluate_results, f, indent=4)
+    #         logging.info(f"saving evaluation result to {save_file}")
+    #     else:
+    #         print(json.dumps(evaluate_results, indent=4))

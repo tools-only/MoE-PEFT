@@ -155,16 +155,16 @@ def init_adapter_config(
     for lora_config in config["lora"]:
         adapter_name = lora_config["name"]
         adapter_path = f"{args.dir}{os.sep}{adapter_name}"
-        if not args.load_adapter and os.path.exists(adapter_path):
-            if args.overwrite:
-                logging.warning(
-                    f"Overwriting existed adapter model file: {adapter_path}"
-                )
-            elif not query_yes_no(
-                f"Existed adapter model file detected: {adapter_path}\n" + "Overwrite?"
-            ):
-                logging.info("User canceled training due to file conflict.")
-                exit(0)
+        # if not args.load_adapter and os.path.exists(adapter_path):
+        #     if args.overwrite:
+        #         logging.warning(
+        #             f"Overwriting existed adapter model file: {adapter_path}"
+        #         )
+        #     elif not query_yes_no(
+        #         f"Existed adapter model file detected: {adapter_path}\n" + "Overwrite?"
+        #     ):
+        #         logging.info("User canceled training due to file conflict.")
+        #         exit(0)
 
         if args.load_adapter:
             llm_model.load_adapter(adapter_path, adapter_name)
@@ -244,10 +244,10 @@ if __name__ == "__main__":
 
     if args.attn_impl is None:
         if (
-            inference_mode
-            and moe_peft_executor.device_name() == "cuda:1"
+            inference_mode and moe_peft_executor.device_name() == "cuda:0"
             and is_flash_attn_2_available()
         ):
+            logging.info(f"251 flash_attn")
             args.attn_impl = "flash_attn"
         else:
             args.attn_impl = "eager"

@@ -515,7 +515,7 @@ class LLMModel(torch.nn.Module):
             lengths_rejected = [len(seq) for seq in input_args.batch_rejected_tokens_]
             all_lengths = lengths_chosen + lengths_rejected
             max_length = max(all_lengths) if all_lengths else 0
-
+            logging.info(f"max_length of current batch: {max_length}")
             concatenated_batch = {}
             for k, _ in vars(input_args).items():
                 if 'chosen' in k:
@@ -899,7 +899,6 @@ class LLMModel(torch.nn.Module):
         labels = labels[:, 1:].clone()
         logits = logits[:, :-1, :]
         loss_mask = (labels != -100)
-        # logging.info(f"902 {loss_mask}")
         # dummy token; we'll ignore the losses on these tokens later
         labels[labels == -100] = 0
         per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
@@ -1031,8 +1030,8 @@ class LLMModel(torch.nn.Module):
         # calculate loss
         with torch.no_grad():
             # reference_output
-            reference_logits = self.reference_(input_ids.to('cpu'), attention_mask.to('cpu')).logits.to(torch.float32)
-            ref_logps = self._get_batch_logps(reference_logits, labels.to('cpu'), average_log_prob=True)
+            reference_logits = self.reference_(input_ids.to('cuda:1'), attention_mask.to('cuda:1')).logits.to(torch.float32)
+            ref_logps = self._get_batch_logps(reference_logits, labels.to('cuda:1'), average_log_prob=True)
             del reference_logits
             # prepare inputs
             if isinstance(input_args.batch_chosen_tokens_, torch.Tensor):
@@ -1083,7 +1082,7 @@ class LLMModel(torch.nn.Module):
                 output_data_rejected.router_logits = unpack_router_logits(all_router_logits[idx])
 
             policy_rejected_logps = self._get_batch_logps(output_data_rejected.logits, labels[chosen_shape:], average_log_prob=True)
-            del output_data_rejected, labels
+            del output_data_rejected
             beta = 0.1
             label_smoothing = 0
             # dpo loss
@@ -1112,7 +1111,7 @@ class LLMModel(torch.nn.Module):
         input_args.batch_rejected_masks_ = None
         input_args.batch_rejected_tokens_ = None
         input_args.batch_rejected_tokens_labels_ = None
-        del rotary_emb, causal_mask, pi_logratios, ref_logratios, logits, losses, all_router_logits, input_args, output_rejected
+        del labels, rotary_emb, causal_mask, pi_logratios, ref_logratios, logits, losses, all_router_logits, input_args, output_rejected
         torch.cuda.empty_cache()
         return output_chosen
 
@@ -1188,7 +1187,7 @@ class LLMModel(torch.nn.Module):
 
         reference_model = AutoModelForCausalLM.from_pretrained(
                 name_or_path,
-                device_map='cpu',
+                device_map='cuda:1',
                 trust_remote_code=True,
                 torch_dtype=load_dtype,
             )
