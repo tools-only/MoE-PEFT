@@ -1185,14 +1185,14 @@ class LLMModel(torch.nn.Module):
 
         logging.info(f"Use {attn_impl} as attention implementation.")
 
-        reference_model = AutoModelForCausalLM.from_pretrained(
-                name_or_path,
-                device_map='cuda:1',
-                trust_remote_code=True,
-                torch_dtype=load_dtype,
-            )
-        reference_model.requires_grad_(False)
-        # reference_model = None
+        # reference_model = AutoModelForCausalLM.from_pretrained(
+        #         name_or_path,
+        #         device_map='cuda:1',
+        #         trust_remote_code=True,
+        #         torch_dtype=load_dtype,
+        #     )
+        # reference_model.requires_grad_(False)
+        reference_model = None
         return LLMModel(model, reference_model)
 
     def init_adapter(
@@ -1233,6 +1233,12 @@ class LLMModel(torch.nn.Module):
                 self.training_layer = [i for i in range(23, 32)]
             elif config.strategies_ == 'whole':
                 self.training_layer = [i for i in range(32)]
+            elif config.strategies_ == 'first+last':
+                self.training_layer = [i for i in range(13)] + [i for i in range(23, 32)]
+            elif config.strategies_ == 'first+middle':
+                self.training_layer = [i for i in range(23)]
+            elif config.strategies_ == 'middle+last':
+                self.training_layer = [i for i in range(13, 32)]
             else:
                 raise ValueError(f"Unknown training strategy: {config.strategies_}")
 

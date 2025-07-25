@@ -197,6 +197,12 @@ def _compute_metrcis(model, current_configs, sequence_lengths, batch_labels, out
                 training_layer = [i for i in range(23, 32)]
             elif config.strategies_ == 'whole':
                 training_layer = [i for i in range(32)]
+            elif config.strategies_ == 'first+last':
+                training_layer = [i for i in range(13)] + [i for i in range(23, 32)]
+            elif config.strategies_ == 'first+middle':
+                training_layer = [i for i in range(23)]
+            elif config.strategies_ == 'middle+last':
+                training_layer = [i for i in range(13, 32)]
             else:
                 raise ValueError(f"Unknown training strategy: {config.strategies_}")
             

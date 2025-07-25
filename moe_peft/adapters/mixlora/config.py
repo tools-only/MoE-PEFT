@@ -51,7 +51,7 @@ class MixLoraConfig(LoraConfig):
         )
         assert (
             isinstance(self.strategies_, str)
-            and self.strategies_ in ['first', 'middle', 'last', 'whole']
+            and self.strategies_ in ['first', 'middle', 'last', 'whole', 'first+last', 'first+middle', 'middle+last']
         )
         assert isinstance(self.jitter_noise_, float) and self.jitter_noise_ >= 0
         assert isinstance(self.router_loss_, bool)
